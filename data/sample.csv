@@ -1,0 +1,17 @@
+customer_id,age,gender,annual_income,purchase_amount,product_category,city
+101,25,Male,45000,2500,Electronics,Kolkata
+102,32,Female,60000,4200,Clothing,Delhi
+103,28,Male,52000,3100,Electronics,Mumbai
+104,45,Female,85000,7000,Furniture,Kolkata
+105,35,Male,70000,5500,Clothing,Delhi
+106,29,Female,48000,2800,Electronics,Mumbai
+107,41,Male,90000,8500,Furniture,Kolkata
+108,23,Female,35000,1800,Clothing,Delhi
+109,38,Male,75000,6200,Electronics,Mumbai
+110,31,Female,58000,3900,Clothing,Kolkata
+111,27,Male,,3200,Electronics,Delhi
+112,42,Female,82000,7600,Furniture,Mumbai
+113,36,Male,68000,5100,Clothing,Kolkata
+114,30,Female,50000,,Electronics,Delhi
+115,26,Male,42000,2300,Clothing,Mumbai
+115,26,Male,42000,2300,Clothing,Mumbai
