@@ -11,7 +11,7 @@ from utils.llm import get_llm
 
 
 Operation = Literal[
-    "dataset_overview", "column_summary", "value_counts", "aggregate",
+    "dataset_overview", "column_summary", "value_counts", "filter_count", "aggregate",
     "group_by", "correlation", "distribution", "top_n",
 ]
 
@@ -56,6 +56,10 @@ def validate_analysis_plan(plan: AnalysisPlan, available_columns: list[str]) -> 
         if any(column not in valid for column in referenced):
             continue
         if task.operation in {"column_summary", "value_counts", "distribution"} and not columns:
+            continue
+        if task.operation == "filter_count" and (
+            not task.filter_column or task.filter_value is None
+        ):
             continue
         if task.operation in {"aggregate", "top_n"} and not task.metric:
             continue
@@ -300,7 +304,7 @@ QUESTION:
 DATASET:
 {schema_context}
 
-Allowed operations: dataset_overview, column_summary, value_counts, aggregate, group_by, correlation, distribution, top_n.
+Allowed operations: dataset_overview, column_summary, value_counts, filter_count, aggregate, group_by, correlation, distribution, top_n.
 Use exact column names. For group_by provide group_by, metric and aggregation. For highest/lowest questions, identify the correct numeric metric and relevant entity column. Do not invent results or columns. Do not treat identifiers as measurements. Keep the plan focused.
 
 {format_instructions}
