@@ -73,10 +73,14 @@ def value_counts(df, task):
         series = df[column]
         if pd.api.types.is_string_dtype(series) or series.dtype == object:
             series = series.astype("string").str.strip()
-        counts = series.value_counts(dropna=False).head(task.get("limit", 10))
+        counts = series.value_counts(dropna=False)
+        ordered_counts = sorted(
+            counts.items(),
+            key=lambda item: (-int(item[1]), str(item[0]).casefold()),
+        )[:task.get("limit", 10)]
         result[column] = [
             {"value": _json_safe(index), "count": int(count)}
-            for index, count in counts.items()
+            for index, count in ordered_counts
         ]
     return result
 
