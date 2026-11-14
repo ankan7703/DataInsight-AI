@@ -1,188 +1,139 @@
-
 import pandas as pd
 from pathlib import Path
 
 
 def load_dataset(file_path):
-    """
-    Load a CSV or Excel dataset.
-
-    Parameters:
-        file_path (str): Path to the dataset.
-
-    Returns:
-        pd.DataFrame: Loaded dataset.
-    """
-
+    """Load a CSV or Excel file into a DataFrame."""
     file_path = Path(file_path)
-
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
     extension = file_path.suffix.lower()
-
     try:
         if extension == ".csv":
             df = pd.read_csv(file_path)
-
-        elif extension in [".xlsx", ".xls"]:
+        elif extension in {".xlsx", ".xls"}:
             df = pd.read_excel(file_path)
-
         else:
-            raise ValueError(
-                "Unsupported file format. Please upload CSV or Excel files."
-            )
-
-    except pd.errors.EmptyDataError:
-        raise ValueError("The uploaded CSV/Excel file is empty.")
+            raise ValueError("Supported tabular formats are CSV and Excel.")
+    except pd.errors.EmptyDataError as error:
+        raise ValueError("The uploaded file is empty.") from error
 
     if df.empty:
-        raise ValueError("The uploaded dataset contains no data.")
-
+        raise ValueError("The uploaded dataset contains no rows.")
+    if len(df.columns) == 0:
+        raise ValueError("The uploaded dataset contains no columns.")
+    if not df.columns.is_unique:
+        raise ValueError("The dataset contains duplicate column names. Rename them before analysis.")
     return df
 
 
-def get_dataset_overview(df):
-    """
-    Generate a basic overview of the dataset.
-
-    Parameters:
-        df (pd.DataFrame): Input dataset.
-
-    Returns:
-        dict: Dataset overview.
-    """
-
-    overview = {
-        "total_rows": df.shape[0],
-        "total_columns": df.shape[1],
-        "column_names": df.columns.tolist(),
-        "data_types": df.dtypes.astype(str).to_dict(),
-        "memory_usage_kb": round(
-            df.memory_usage(deep=True).sum() / 1024, 2
-        ),
-        "preview": df.head(5).to_dict(orient="records")
+def _column_profile(df, column):
+    series = df[column]
+    dtype = str(series.dtype)
+    non_null = series.dropna()
+    profile = {
+        "name": str(column),
+        "dtype": dtype,
+        "non_null_count": int(series.notna().sum()),
+        "missing_count": int(series.isna().sum()),
+        "missing_percentage": round(float(series.isna().mean() * 100), 2),
+        "unique_count": int(series.nunique(dropna=True)),
+        "examples": [str(value)[:120] for value in non_null.head(5).tolist()],
     }
 
-    return overview
+    if pd.api.types.is_numeric_dtype(series):
+        profile["inferred_type"] = "numeric"
+    elif pd.api.types.is_datetime64_any_dtype(series):
+        profile["inferred_type"] = "datetime"
+    elif pd.api.types.is_bool_dtype(series):
+        profile["inferred_type"] = "boolean"
+    else:
+        profile["inferred_type"] = (
+            "categorical" if series.nunique(dropna=True) <= min(50, max(10, len(df) // 5))
+            else "text_or_identifier"
+        )
+    return profile
+
+
+def get_dataset_overview(df):
+    """Return a schema-neutral overview of the supplied table."""
+    return {
+        "total_rows": int(df.shape[0]),
+        "total_columns": int(df.shape[1]),
+        "column_names": [str(column) for column in df.columns],
+        "data_types": {str(k): str(v) for k, v in df.dtypes.items()},
+        "column_profiles": [_column_profile(df, column) for column in df.columns],
+        "memory_usage_kb": round(df.memory_usage(deep=True).sum() / 1024, 2),
+        "preview": df.head(5).astype(object).where(pd.notna(df.head(5)), None).to_dict(orient="records"),
+    }
+
 
 def get_missing_values(df):
-
     missing_count = df.isnull().sum()
-
-    missing_percentage = (
-        missing_count / len(df)
-    ) * 100
-
-    missing_report = pd.DataFrame({
+    missing_percentage = (missing_count / max(len(df), 1)) * 100
+    report = pd.DataFrame({
         "missing_count": missing_count,
-        "missing_percentage": missing_percentage
+        "missing_percentage": missing_percentage,
     })
-
-    missing_report = missing_report[
-        missing_report["missing_count"] > 0
-    ]
-
-    return missing_report.sort_values(
-        by="missing_count",
-        ascending=False
+    return report[report["missing_count"] > 0].sort_values(
+        by="missing_count", ascending=False
     )
 
 
 def get_duplicate_records(df):
-
-    duplicate_count = df.duplicated().sum()
-
+    duplicate_count = int(df.duplicated().sum())
     duplicate_rows = df[df.duplicated(keep=False)]
-
-    duplicate_report = {
-        "total_duplicate_rows": int(duplicate_count),
-        "duplicate_records": duplicate_rows.to_dict(
-            orient="records"
-        )
+    return {
+        "total_duplicate_rows": duplicate_count,
+        "duplicate_records": duplicate_rows.astype(object).where(
+            pd.notna(duplicate_rows), None
+        ).to_dict(orient="records"),
     }
-
-    return duplicate_report
 
 
 def get_statistical_summary(df):
-
     numerical_df = df.select_dtypes(include="number")
-
-    categorical_df = df.select_dtypes(
-        include=["object", "category", "bool"]
-    )
-
-    numerical_summary = numerical_df.describe().round(2)
-
-    categorical_summary = categorical_df.describe()
-
+    categorical_df = df.select_dtypes(include=["object", "category", "bool"])
     return {
-        "numerical_summary": numerical_summary,
-        "categorical_summary": categorical_summary
+        "numerical_summary": numerical_df.describe().round(2),
+        "categorical_summary": categorical_df.describe(),
     }
 
 
 def get_outlier_summary(df, exclude_columns=None):
-
-    if exclude_columns is None:
-        exclude_columns = []
-
-    numerical_df = df.select_dtypes(include="number")
-
-    numerical_df = numerical_df.drop(
-        columns=exclude_columns,
-        errors="ignore"
+    """IQR outlier screening; caller may explicitly exclude unsuitable fields."""
+    numerical_df = df.select_dtypes(include="number").drop(
+        columns=exclude_columns or [], errors="ignore"
     )
-
-    outlier_report = {}
-
+    report = {}
     for column in numerical_df.columns:
-
-        Q1 = numerical_df[column].quantile(0.25)
-        Q3 = numerical_df[column].quantile(0.75)
-
-        IQR = Q3 - Q1
-
-        lower_bound = Q1 - (1.5 * IQR)
-        upper_bound = Q3 + (1.5 * IQR)
-
-        outliers = numerical_df[
-            (numerical_df[column] < lower_bound) |
-            (numerical_df[column] > upper_bound)
-        ][column]
-
-        outlier_report[column] = {
-            "lower_bound": float(round(lower_bound, 2)),
-            "upper_bound": float(round(upper_bound, 2)),
+        values = numerical_df[column].dropna()
+        if values.empty:
+            continue
+        q1, q3 = values.quantile([0.25, 0.75])
+        iqr = q3 - q1
+        lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        outliers = values[(values < lower) | (values > upper)]
+        report[str(column)] = {
+            "lower_bound": float(lower),
+            "upper_bound": float(upper),
             "outlier_count": int(len(outliers)),
-            "outlier_values": outliers.tolist()
+            "outlier_values": outliers.head(100).tolist(),
         }
-
-    return outlier_report
+    return report
 
 
 def generate_data_profile(df):
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("Input must be a Pandas DataFrame.")
+    if df.empty:
+        raise ValueError("Dataset cannot be empty.")
 
-    overview = get_dataset_overview(df)
-
-    missing_values = get_missing_values(df)
-
-    duplicate_records = get_duplicate_records(df)
-
-    statistical_summary = get_statistical_summary(df)
-
-    outlier_summary = get_outlier_summary(
-        df,
-        exclude_columns=["customer_id"]
-    )
-
-    complete_profile = {
-        "dataset_overview": overview,
-        "missing_values": missing_values,
-        "duplicate_records": duplicate_records,
-        "statistical_summary": statistical_summary,
-        "outlier_summary": outlier_summary
+    return {
+        "dataset_overview": get_dataset_overview(df),
+        "missing_values": get_missing_values(df),
+        "duplicate_records": get_duplicate_records(df),
+        "statistical_summary": get_statistical_summary(df),
+        "outlier_summary": get_outlier_summary(df),
     }
-
-    return complete_profile
