@@ -1,6 +1,6 @@
+"""Schema-aware analysis planning for arbitrary tabular datasets."""
 
-from typing import Literal
-
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -8,392 +8,150 @@ from langchain_core.prompts import PromptTemplate
 from utils.llm import get_llm
 
 
-# ---------------------------------------
-# 1. Define the allowed analysis operations
-# ---------------------------------------
-
-AllowedOperation = Literal[
-    "calculate_purchase_statistics",
-    "group_by_category",
-    "analyze_age_distribution",
-    "group_by_city",
-    "general_exploration"
+Operation = Literal[
+    "dataset_overview",
+    "column_summary",
+    "value_counts",
+    "aggregate",
+    "group_by",
+    "correlation",
+    "distribution",
+    "top_n",
 ]
 
 
-# ---------------------------------------
-# 2. Define the structured output schema
-# ---------------------------------------
-
 class AnalysisTask(BaseModel):
-    operation: AllowedOperation = Field(
-        description="One supported analysis operation."
-    )
+    operation: Operation
+    columns: list[str] = Field(default_factory=list)
+    group_by: list[str] = Field(default_factory=list)
+    metric: Optional[str] = None
+    aggregation: Optional[Literal["sum", "mean", "median", "min", "max", "count", "nunique", "std"]] = None
+    limit: int = Field(default=10, ge=1, le=100)
+    description: str = ""
 
 
 class AnalysisPlan(BaseModel):
-    identified_columns: list[str] = Field(
-        description="Dataset columns relevant to the request."
-    )
-
-    tasks: list[AnalysisTask] = Field(
-        description="The analysis operations required."
-    )
-
-    visualizations: list[str] = Field(
-        description="Suggested visualization types."
-    )
+    identified_columns: list[str] = Field(default_factory=list)
+    tasks: list[AnalysisTask] = Field(min_length=1, max_length=12)
+    visualizations: list[Literal["bar_chart", "histogram", "boxplot", "scatter_plot", "correlation_heatmap"]] = Field(default_factory=list)
 
 
-# ---------------------------------------
-# 3. Rule-based fallback Planner
-# ---------------------------------------
+def _schema_context(report: dict) -> str:
+    overview = report.get("dataset_overview", {})
+    profiles = report.get("column_profiles", [])
+    return str({
+        "rows": overview.get("total_rows"),
+        "columns": profiles or [
+            {"name": name, "dtype": dtype}
+            for name, dtype in overview.get("data_types", {}).items()
+        ],
+        "sample_values": overview.get("preview", [])[:3],
+    })
 
 
-def create_rule_based_analysis_plan(
-    user_request,
-    exploration_report
-):
-    """Create an analysis plan without using an LLM."""
-
-    columns = exploration_report[
-        "dataset_overview"
-    ]["column_names"]
-
-    request = user_request.lower()
-
+def validate_analysis_plan(plan: AnalysisPlan, available_columns: list[str]) -> dict:
+    valid = set(available_columns)
     tasks = []
-    identified_columns = []
-    visualizations = []
-
-    # 1. Product category analysis
-    if any(word in request for word in [
-        "category", "categories",
-        "product", "products"
-    ]):
-
-        if all(column in columns for column in [
-            "product_category",
-            "purchase_amount"
-        ]):
-
-            tasks.append({
-                "operation": "group_by_category"
-            })
-
-            identified_columns.extend([
-                "product_category",
-                "purchase_amount"
-            ])
-
-            visualizations.append("bar_chart")
-
-    # 2. Overall purchase statistics
-    elif any(word in request for word in [
-        "purchase", "purchasing",
-        "sales", "revenue",
-        "spending", "transaction"
-    ]):
-
-        if "purchase_amount" in columns:
-
-            tasks.append({
-                "operation": "calculate_purchase_statistics"
-            })
-
-            identified_columns.append("purchase_amount")
-
-    # 3. Age analysis
-    elif any(word in request for word in [
-        "age", "customer age",
-        "age group"
-    ]):
-
-        if "age" in columns:
-
-            tasks.append({
-                "operation": "analyze_age_distribution"
-            })
-
-            identified_columns.append("age")
-            visualizations.append("histogram")
-
-    # 4. City analysis
-    elif any(word in request for word in [
-        "city", "cities",
-        "location", "region"
-    ]):
-
-        if "city" in columns:
-
-            tasks.append({
-                "operation": "group_by_city"
-            })
-
-            identified_columns.append("city")
-            visualizations.append("bar_chart")
-
-    # Return None when the question is not recognized.
-    # This allows Gemini to handle complex questions.
-
-    if not tasks:
-        return None
-
-    return {
-        "agent": "Planner Agent",
-        "status": "success",
-        "planner_mode": "rule_based",
-        "user_request": user_request,
-        "identified_columns": list(
-            dict.fromkeys(identified_columns)
-        ),
-        "tasks": tasks,
-        "visualizations": list(
-            dict.fromkeys(visualizations)
-        ),
-        "total_tasks": len(tasks)
-    }
-
-
-# ---------------------------------------
-# 4. Validate the Gemini-generated plan
-# ---------------------------------------
-
-def validate_analysis_plan(plan, available_columns):
-    """Reject unsupported operations and invalid columns."""
-
-    required_columns = {
-        "calculate_purchase_statistics": [
-            "purchase_amount"
-        ],
-        "group_by_category": [
-            "product_category",
-            "purchase_amount"
-        ],
-        "analyze_age_distribution": [
-            "age"
-        ],
-        "group_by_city": [
-            "city"
-        ],
-        "general_exploration": []
-    }
-
-    validated_tasks = []
-    identified_columns = []
+    used = []
 
     for task in plan.tasks:
-
-        operation = task.operation
-
-        required = required_columns[operation]
-
-        # Skip operations if required columns are missing
-        if not all(
-            column in available_columns
-            for column in required
-        ):
+        columns = list(dict.fromkeys(task.columns))
+        groups = list(dict.fromkeys(task.group_by))
+        referenced = columns + groups + ([task.metric] if task.metric else [])
+        if any(column not in valid for column in referenced):
             continue
+        if task.operation in {"column_summary", "value_counts", "distribution"} and not columns:
+            continue
+        if task.operation in {"aggregate", "top_n"} and (not task.metric or task.metric not in valid):
+            continue
+        if task.operation == "group_by" and (not groups or not task.metric):
+            continue
+        if task.operation == "correlation" and len(columns) < 2:
+            continue
+        if task.aggregation is None and task.operation in {"aggregate", "group_by", "top_n"}:
+            continue
+        tasks.append(task.model_dump())
+        used.extend(referenced)
 
-        validated_tasks.append({
-            "operation": operation
-        })
-
-        identified_columns.extend(required)
-
-    # Remove duplicate tasks
-    unique_tasks = []
-    seen_operations = set()
-
-    for task in validated_tasks:
-
-        operation = task["operation"]
-
-        if operation not in seen_operations:
-            unique_tasks.append(task)
-            seen_operations.add(operation)
-
-    # Use general exploration if no valid task remains
-    if not unique_tasks:
-        unique_tasks = [{
-            "operation": "general_exploration"
-        }]
-
-    valid_visualizations = {
-        "bar_chart",
-        "histogram",
-        "boxplot",
-        "scatter_plot",
-        "correlation_heatmap"
-    }
-
-    visualizations = [
-        visualization
-        for visualization in plan.visualizations
-        if visualization in valid_visualizations
-    ]
+    if not tasks:
+        raise ValueError(
+            "The planner did not produce a valid operation for the available columns. "
+            "Try asking about a specific column or a general dataset overview."
+        )
 
     return {
         "agent": "Planner Agent",
         "status": "success",
-        "planner_mode": "gemini",
-        "identified_columns": list(
-            dict.fromkeys(identified_columns)
-        ),
-        "tasks": unique_tasks,
-        "visualizations": list(
-            dict.fromkeys(visualizations)
-        ),
-        "total_tasks": len(unique_tasks)
+        "planner_mode": "schema_aware_gemini",
+        "identified_columns": list(dict.fromkeys(used)),
+        "tasks": tasks,
+        "visualizations": list(dict.fromkeys(plan.visualizations)),
+        "total_tasks": len(tasks),
     }
 
 
-# ---------------------------------------
-# 5. Gemini-powered Planner
-# ---------------------------------------
-
-def create_analysis_plan(
-    user_request,
-    exploration_report
-):
-    """Generate a structured analysis plan using Gemini."""
-
+def create_analysis_plan(user_request: str, exploration_report: dict) -> dict:
     if not isinstance(user_request, str) or not user_request.strip():
         raise ValueError("User request cannot be empty.")
-
     if not isinstance(exploration_report, dict):
         raise TypeError("Exploration report must be a dictionary.")
 
-    available_columns = exploration_report[
-        "dataset_overview"
-    ]["column_names"]
+    overview = exploration_report.get("dataset_overview", {})
+    available_columns = overview.get("column_names", [])
+    if not available_columns:
+        raise ValueError("No columns were found in the uploaded dataset.")
 
-    # Try rule-based planning first
-    fast_plan = create_rule_based_analysis_plan(
-        user_request,
-        exploration_report
-    )
-
-    if fast_plan is not None:
-
-        print(
-            "Using fast rule-based Planner. "
-            "Gemini API call skipped."
-        )
-
-        return fast_plan
-
-    print(
-        "Question requires advanced understanding. "
-        "Using Gemini Planner..."
-    )
-
-    parser = PydanticOutputParser(
-        pydantic_object=AnalysisPlan
-    )
-
+    parser = PydanticOutputParser(pydantic_object=AnalysisPlan)
     prompt = PromptTemplate(
-        template="""
-You are the Planner Agent of DataInsight AI.
+        template="""You are the schema-aware planning component of a general-purpose data analysis platform.
 
-Your job is to understand the user's data analysis request
-and create a structured analysis plan.
+Create a plan for the user's exact question using ONLY the supplied dataset schema and sample values.
+The dataset may belong to any domain. Never assume sales, customers, age, gender, or any particular column name.
 
-USER REQUEST:
+USER QUESTION:
 {user_request}
 
-AVAILABLE DATASET COLUMNS:
-{available_columns}
+DATASET CONTEXT:
+{schema_context}
 
-SUPPORTED OPERATIONS:
-
-1. calculate_purchase_statistics
-   Use for total, average, median, minimum or maximum
-   purchase amount.
-
-2. group_by_category
-   Use to compare purchase amounts across product categories.
-
-3. analyze_age_distribution
-   Use to analyze customer ages and age groups.
-
-4. group_by_city
-   Use to compare the number of records across cities.
-
-5. general_exploration
-   Use for general dataset analysis.
+ALLOWED OPERATIONS:
+- dataset_overview: general dataset-level facts.
+- column_summary: descriptive statistics for named columns.
+- value_counts: frequency counts for categorical/discrete columns.
+- aggregate: one numeric column aggregated using sum/mean/median/min/max/count/nunique/std.
+- group_by: aggregate a numeric metric for one or more grouping columns.
+- correlation: relationship between at least two numeric columns.
+- distribution: distribution of one numeric column.
+- top_n: rank rows/groups by a metric; use group_by first when ranking groups.
 
 RULES:
-
-- Select only operations directly necessary to answer the user's question.
-- Do not select additional operations merely because their columns are available.
-- If group_by_category answers the question, do not add
-  calculate_purchase_statistics unless overall purchase statistics
-  are explicitly requested.
-- Never invent dataset columns.
-- Only select operations whose required columns exist.
-- Select multiple operations only when the question requires them.
-- Suggest only supported visualization types.
-- Do not generate Python code or SQL queries.
-- Do not invent numerical findings.
-- Return the result in the requested structured format.
+- Use exact column names from the supplied schema.
+- Pick only operations needed to answer the question.
+- For a broad request such as "analyse this dataset", include overview and useful column summaries/value counts for suitable columns.
+- Do not invent columns, data, results, code, or SQL.
+- For grouping questions, use group_by with group_by and metric.
+- For "how many records per category", use value_counts on the relevant column.
+- Do not treat an identifier as a meaningful measurement merely because it is numeric.
+- Keep the plan focused; maximum 8 tasks.
+- Suggest visualizations only when they directly help answer the question.
 
 {format_instructions}
 """,
-        input_variables=[
-            "user_request",
-            "available_columns"
-        ],
-        partial_variables={
-            "format_instructions": parser.get_format_instructions()
-        }
+        input_variables=["user_request", "schema_context"],
+        partial_variables={"format_instructions": parser.get_format_instructions()},
     )
 
-    try:
-
-        llm = get_llm()
-
-        formatted_prompt = prompt.format(
-            user_request=user_request,
-            available_columns=", ".join(available_columns)
+    response = get_llm().invoke(prompt.format(
+        user_request=user_request,
+        schema_context=_schema_context(exploration_report),
+    ))
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
         )
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("AI Planner returned an empty response.")
 
-        response = llm.invoke(formatted_prompt)
-
-        # Extract text from the model response
-        if isinstance(response.content, str):
-            response_text = response.content
-        else:
-            response_text = "".join(
-                block.get("text", "")
-                for block in response.content
-                if isinstance(block, dict)
-            )
-
-        # Parse Gemini response into Pydantic model
-        structured_plan = parser.parse(response_text)
-
-        # Validate operations and columns
-        return validate_analysis_plan(
-            structured_plan,
-            available_columns
-        )
-
-    except Exception as error:
-
-        print(
-            f"Gemini Planner failed: {error}"
-        )
-
-        print(
-            "Switching to rule-based Planner..."
-        )
-
-        fallback_plan = create_rule_based_analysis_plan(
-            user_request,
-            exploration_report
-        )
-
-        fallback_plan["fallback_reason"] = str(error)
-
-        return fallback_plan
+    structured = parser.parse(content)
+    return validate_analysis_plan(structured, available_columns)
