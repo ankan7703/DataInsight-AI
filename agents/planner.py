@@ -142,7 +142,7 @@ def create_rule_based_analysis_plan(user_request: str, exploration_report: dict)
                 metric=metric,
                 aggregation=direction,
                 limit=10,
-                description=f"{direction} {metric} by {entity}",
+                description="minimum" if direction == "min" else f"{direction} {metric} by {entity}",
             ))
         else:
             tasks.append(AnalysisTask(
@@ -192,9 +192,9 @@ def create_analysis_plan(user_request: str, exploration_report: dict) -> dict:
     # Avoid network/model latency for common questions that can be mapped safely.
     normalised_request = _normalise(user_request)
     simple_patterns = [
-        r"\\b(highest|maximum|max|largest|most expensive|highest priced|lowest|minimum|min|smallest|cheapest)\\b",
-        r"\\b(average|mean|sum|total|median)\\b",
-        r"\\b(count|how many|frequency)\\b",
+        r"\b(highest|maximum|max|largest|most expensive|highest priced|lowest|minimum|min|smallest|cheapest)\\b",
+        r"\b(average|mean|sum|total|median)\\b",
+        r"\b(count|how many|frequency)\\b",
     ]
     is_simple = any(re.search(pattern, normalised_request) for pattern in simple_patterns)
     has_metric = _find_column(
@@ -209,12 +209,12 @@ def create_analysis_plan(user_request: str, exploration_report: dict) -> dict:
     )
     # "highest average ..." needs a different two-stage plan; leave it to Gemini.
     complex_group_average = bool(
-        re.search(r"\\b(highest|lowest|maximum|minimum|top|bottom)\\b", normalised_request)
-        and re.search(r"\\b(average|mean)\\b", normalised_request)
+        re.search(r"\b(highest|lowest|maximum|minimum|top|bottom)\\b", normalised_request)
+        and re.search(r"\b(average|mean)\\b", normalised_request)
     )
 
     if is_simple and not complex_group_average and (
-        has_metric or (has_entity and re.search(r"\\b(count|how many|frequency)\\b", normalised_request))
+        has_metric or (has_entity and re.search(r"\b(count|how many|frequency)\\b", normalised_request))
     ):
         fast_plan = create_rule_based_analysis_plan(user_request, exploration_report)
         fast_plan["planner_mode"] = "fast_rule_based"
