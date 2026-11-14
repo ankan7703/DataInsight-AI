@@ -101,7 +101,7 @@ def group_by(df, task):
     if method not in {"count", "nunique"} and not pd.api.types.is_numeric_dtype(df[metric]):
         raise ValueError(f"{method} requires a numeric metric: {metric}")
     grouped = df.groupby(groups, dropna=False)[metric].agg(method).reset_index(name="result")
-    grouped = grouped.sort_values(\n        "result",\n        ascending=(task.get("description") == "minimum"),\n        na_position="last",\n    )
+    grouped = grouped.sort_values(\n        "result",\n        ascending=(task.get("description") in {"minimum", "lowest_average"}),\n        na_position="last",\n    )
     return _records(grouped.head(task.get("limit", 10)))
 
 
