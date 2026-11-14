@@ -49,74 +49,155 @@ def extract_response_text(response):
 # 3. Rule-based Quick Answer Fallback
 # ---------------------------------------
 
+
 def generate_rule_based_answer(
     user_request,
     analysis_results
 ):
 
     question = user_request.lower()
+    answers = []
 
     for item in analysis_results.get("results", []):
 
         operation = item.get("operation")
         data = item.get("result")
 
+        # ---------------------------------------
+        # 1. Product Category Analysis
+        # ---------------------------------------
+
         if operation == "group_by_category" and data:
 
-            if "total" in question or "revenue" in question:
-                key = "total_purchase_amount"
-                metric = "total purchase amount"
+            # Highest total purchase amount
+            if any(word in question for word in [
+                "highest", "maximum", "most", "top"
+            ]) and any(word in question for word in [
+                "total", "revenue", "purchase"
+            ]):
 
-            elif "average" in question:
-                key = "average_purchase_amount"
-                metric = "average purchase amount"
+                highest = max(
+                    data,
+                    key=lambda x: x.get(
+                        "total_purchase_amount", float("-inf")
+                    )
+                )
 
-            else:
-                key = "total_purchase_amount"
-                metric = "total purchase amount"
+                answers.append(
+                    f"{highest['product_category']} has the "
+                    f"highest total purchase amount, at "
+                    f"₹{highest['total_purchase_amount']:,.2f}."
+                )
 
-            highest = max(
-                data,
-                key=lambda x: x.get(key, float("-inf"))
-            )
+            # Lowest total purchase amount
+            elif any(word in question for word in [
+                "lowest", "minimum", "least"
+            ]) and any(word in question for word in [
+                "total", "revenue", "purchase"
+            ]):
 
-            return (
-                f"{highest['product_category']} has the highest "
-                f"{metric}, at ₹{highest[key]:,.2f}."
-            )
+                lowest = min(
+                    data,
+                    key=lambda x: x.get(
+                        "total_purchase_amount", float("inf")
+                    )
+                )
 
-        elif operation == "calculate_purchase_statistics":
+                answers.append(
+                    f"{lowest['product_category']} has the "
+                    f"lowest total purchase amount, at "
+                    f"₹{lowest['total_purchase_amount']:,.2f}."
+                )
+
+            # Average purchase amount for each category
+            if "average" in question:
+
+                averages = [
+                    f"{row['product_category']}: "
+                    f"₹{row['average_purchase_amount']:,.2f}"
+                    for row in data
+                ]
+
+                answers.append(
+                    "Average purchase amount by category: "
+                    + "; ".join(averages) + "."
+                )
+
+            # Total purchase amount for each category
+            if any(phrase in question for phrase in [
+                "total purchase amount for each",
+                "total amount for each",
+                "total purchase amount by category",
+                "total sales by category",
+                "total revenue by category"
+            ]):
+
+                totals = [
+                    f"{row['product_category']}: "
+                    f"₹{row['total_purchase_amount']:,.2f}"
+                    for row in data
+                ]
+
+                answers.append(
+                    "Total purchase amount by category: "
+                    + "; ".join(totals) + "."
+                )
+
+        # ---------------------------------------
+        # 2. Overall Purchase Statistics
+        # ---------------------------------------
+
+        elif operation == "calculate_purchase_statistics" and data:
 
             total = data.get("total_purchase_amount")
             average = data.get("average_purchase_amount")
 
-            if total is not None and "total" in question:
-                return f"Total purchase amount is ₹{total:,.2f}."
+            if total is not None and any(word in question for word in [
+                "total", "revenue"
+            ]):
+                answers.append(
+                    f"Total purchase amount is ₹{total:,.2f}."
+                )
 
-            if average is not None:
-                return f"Average purchase amount is ₹{average:,.2f}."
+            if average is not None and "average" in question:
+                answers.append(
+                    f"Average purchase amount is ₹{average:,.2f}."
+                )
 
-        elif operation == "analyze_age_distribution":
+        # ---------------------------------------
+        # 3. Age Distribution
+        # ---------------------------------------
+
+        elif operation == "analyze_age_distribution" and data:
 
             average_age = data.get("average_age")
 
             if average_age is not None:
-                return (
+                answers.append(
                     f"The average customer age is "
                     f"{average_age:.1f} years."
                 )
+
+        # ---------------------------------------
+        # 4. City Analysis
+        # ---------------------------------------
 
         elif operation == "group_by_city" and data:
 
             highest = max(
                 data,
-                key=lambda x: x.get("total_purchase_amount", 0)
+                key=lambda x: x.get(
+                    "total_purchase_amount", 0
+                )
             )
 
-            return (
+            answers.append(
                 f"{highest.get('city', 'This city')} has the "
                 f"highest total purchase amount."
             )
+
+    if answers:
+        return " ".join(answers)
 
     return (
         "The analysis was completed, but a concise answer "
