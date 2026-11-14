@@ -68,7 +68,7 @@ def validate_analysis_plan(plan: AnalysisPlan, available_columns: list[str]) -> 
             continue
         if task.operation == "correlation" and len(columns) < 2:
             continue
-        if task.aggregation is None and task.operation in {"aggregate", "group_by", "top_n"}:
+        if task.aggregation is None and task.operation in {"aggregate", "group_by"}:
             continue
         tasks.append(task.model_dump())
         used.extend(referenced)
