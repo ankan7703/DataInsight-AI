@@ -1,202 +1,206 @@
+"""Generic, validated Pandas operations for arbitrary tabular data."""
 
 import pandas as pd
 
 
-def calculate_purchase_statistics(df):
-    """Calculate descriptive statistics for purchase amounts."""
+SUPPORTED_AGGREGATIONS = {
+    "sum": "sum", "mean": "mean", "median": "median",
+    "min": "min", "max": "max", "count": "count",
+    "nunique": "nunique", "std": "std",
+}
 
-    if "purchase_amount" not in df.columns:
-        raise ValueError("Column 'purchase_amount' not found.")
 
-    purchases = df["purchase_amount"].dropna()
+def _require_columns(df, columns):
+    missing = [column for column in columns if column not in df.columns]
+    if missing:
+        raise ValueError(f"Unknown column(s): {missing}")
 
-    if purchases.empty:
-        raise ValueError("No valid purchase amount data available.")
 
+def _json_safe(value):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return value.item()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def _records(frame):
+    return [
+        {str(key): _json_safe(value) for key, value in row.items()}
+        for row in frame.to_dict(orient="records")
+    ]
+
+
+def dataset_overview(df, task):
     return {
-        "total_purchase_amount": float(purchases.sum()),
-        "average_purchase_amount": float(purchases.mean()),
-        "median_purchase_amount": float(purchases.median()),
-        "minimum_purchase_amount": float(purchases.min()),
-        "maximum_purchase_amount": float(purchases.max()),
-        "number_of_transactions": int(purchases.count())
+        "rows": int(df.shape[0]),
+        "columns": int(df.shape[1]),
+        "column_names": [str(column) for column in df.columns],
+        "data_types": {str(k): str(v) for k, v in df.dtypes.items()},
+        "missing_values": {str(k): int(v) for k, v in df.isna().sum().items()},
+        "duplicate_rows": int(df.duplicated().sum()),
     }
 
 
-def group_by_category(df):
-    """Calculate average purchase amount for each product category."""
+def column_summary(df, task):
+    columns = task.get("columns", [])
+    _require_columns(df, columns)
+    output = {}
+    for column in columns:
+        series = df[column]
+        if pd.api.types.is_numeric_dtype(series):
+            desc = series.describe().to_dict()
+            output[column] = {str(k): _json_safe(v) for k, v in desc.items()}
+        else:
+            output[column] = {
+                "non_null_count": int(series.notna().sum()),
+                "unique_count": int(series.nunique(dropna=True)),
+                "most_common": [
+                    {"value": _json_safe(k), "count": int(v)}
+                    for k, v in series.value_counts(dropna=False).head(10).items()
+                ],
+            }
+    return output
 
-    required_columns = ["product_category", "purchase_amount"]
 
-    for column in required_columns:
-        if column not in df.columns:
-            raise ValueError(f"Required column '{column}' not found.")
+def value_counts(df, task):
+    columns = task.get("columns", [])
+    _require_columns(df, columns)
+    result = {}
+    for column in columns:
+        counts = df[column].value_counts(dropna=False).head(task.get("limit", 10))
+        result[column] = [
+            {"value": _json_safe(index), "count": int(count)}
+            for index, count in counts.items()
+        ]
+    return result
 
-    result = (
-        df.groupby("product_category")["purchase_amount"]
-        .agg(["count", "mean", "sum"])
-        .reset_index()
+
+def aggregate(df, task):
+    metric = task.get("metric")
+    _require_columns(df, [metric])
+    method = task.get("aggregation")
+    if method not in SUPPORTED_AGGREGATIONS:
+        raise ValueError("Unsupported aggregation.")
+    series = df[metric]
+    if method not in {"count", "nunique"} and not pd.api.types.is_numeric_dtype(series):
+        raise ValueError(f"{method} requires a numeric column: {metric}")
+    value = getattr(series, method)()
+    return {"column": metric, "aggregation": method, "value": _json_safe(value)}
+
+
+def group_by(df, task):
+    groups = task.get("group_by", [])
+    metric = task.get("metric")
+    _require_columns(df, groups + [metric])
+    method = task.get("aggregation")
+    if method not in SUPPORTED_AGGREGATIONS:
+        raise ValueError("Unsupported aggregation.")
+    if method not in {"count", "nunique"} and not pd.api.types.is_numeric_dtype(df[metric]):
+        raise ValueError(f"{method} requires a numeric metric: {metric}")
+    group_frame = df[groups + [metric]].copy()
+    for column in groups:
+        if pd.api.types.is_string_dtype(group_frame[column]):
+            group_frame[column] = group_frame[column].str.strip()
+    grouped = group_frame.groupby(groups, dropna=False)[metric].agg(method).reset_index(name="result")
+    grouped = grouped.sort_values(
+        "result",
+        ascending=(task.get("description") in {"minimum", "lowest_average"}),
+        na_position="last",
     )
-
-    result = result.rename(columns={
-        "count": "transaction_count",
-        "mean": "average_purchase_amount",
-        "sum": "total_purchase_amount"
-    })
-
-    result = result.sort_values(
-        by="average_purchase_amount",
-        ascending=False
-    )
-
-    return result.round(2).to_dict(orient="records")
+    return _records(grouped.head(task.get("limit", 10)))
 
 
-def analyze_age_distribution(df):
-    """Analyze customer age distribution."""
+def correlation(df, task):
+    columns = task.get("columns", [])
+    _require_columns(df, columns)
+    non_numeric = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
+    if non_numeric:
+        raise ValueError(f"Correlation requires numeric columns: {non_numeric}")
+    return df[columns].corr().round(4).to_dict()
 
-    if "age" not in df.columns:
-        raise ValueError("Column 'age' not found.")
 
-    ages = df["age"].dropna()
-
-    if ages.empty:
-        raise ValueError("No valid age data available.")
-
-    age_groups = pd.cut(
-        ages,
-        bins=[0, 25, 35, 45, 100],
-        labels=["18-25", "26-35", "36-45", "46+"],
-        include_lowest=True
-    )
-
-    return {
-        "average_age": float(ages.mean()),
-        "median_age": float(ages.median()),
-        "minimum_age": int(ages.min()),
-        "maximum_age": int(ages.max()),
-        "age_group_distribution": {
-            str(key): int(value)
-            for key, value in age_groups.value_counts().items()
+def distribution(df, task):
+    columns = task.get("columns", [])
+    _require_columns(df, columns)
+    result = {}
+    for column in columns:
+        if not pd.api.types.is_numeric_dtype(df[column]):
+            raise ValueError(f"Distribution requires a numeric column: {column}")
+        series = df[column].dropna()
+        if series.empty:
+            result[column] = {"count": 0, "bins": []}
+            continue
+        counts, edges = __import__("numpy").histogram(series, bins="auto")
+        result[column] = {
+            "count": int(series.size),
+            "mean": float(series.mean()),
+            "median": float(series.median()),
+            "bins": [
+                {"from": float(edges[i]), "to": float(edges[i + 1]), "count": int(counts[i])}
+                for i in range(len(counts))
+            ],
         }
-    }
+    return result
 
 
-def group_by_city(df):
-    """Count customers or records for each city."""
-
-    if "city" not in df.columns:
-        raise ValueError("Column 'city' not found.")
-
-    result = (
-        df["city"]
-        .value_counts()
-        .reset_index()
-    )
-
-    result.columns = ["city", "record_count"]
-
-    return result.to_dict(orient="records")
+def top_n(df, task):
+    metric = task.get("metric")
+    _require_columns(df, [metric])
+    method = task.get("aggregation")
+    if method not in SUPPORTED_AGGREGATIONS:
+        raise ValueError("Unsupported aggregation.")
+    if method not in {"count", "nunique"} and not pd.api.types.is_numeric_dtype(df[metric]):
+        raise ValueError(f"{method} requires a numeric column: {metric}")
+    ascending = task.get("description") == "minimum"
+    frame = df.sort_values(metric, ascending=ascending, na_position="last").head(task.get("limit", 10))
+    return _records(frame)
 
 
-def general_exploration(df):
-    """Generate a basic numerical summary of the dataset."""
-
-    numeric_summary = df.describe(
-        include="number"
-    ).round(2)
-
-    return numeric_summary.to_dict()
-
+HANDLERS = {
+    "dataset_overview": dataset_overview,
+    "column_summary": column_summary,
+    "value_counts": value_counts,
+    "aggregate": aggregate,
+    "group_by": group_by,
+    "correlation": correlation,
+    "distribution": distribution,
+    "top_n": top_n,
+}
 
 
 def execute_analysis_plan(df, analysis_plan):
-    """
-    Execute predefined operations from the Planner Agent.
-
-    Successful tasks are preserved even if other tasks fail.
-    """
-
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Input must be a Pandas DataFrame.")
-
     if df.empty:
         raise ValueError("Dataset is empty.")
-
     if not isinstance(analysis_plan, dict):
         raise TypeError("Analysis plan must be a dictionary.")
 
     tasks = analysis_plan.get("tasks", [])
-
-    if not isinstance(tasks, list):
-        raise ValueError("Analysis plan tasks must be a list.")
-
-    operation_handlers = {
-        "calculate_purchase_statistics": calculate_purchase_statistics,
-        "group_by_category": group_by_category,
-        "analyze_age_distribution": analyze_age_distribution,
-        "group_by_city": group_by_city,
-        "general_exploration": general_exploration
-    }
-
-    results = []
-    errors = []
-
-    # Handle empty analysis plans
-    if not tasks:
-        errors.append({
-            "operation": None,
-            "error": "No analysis tasks were provided by the Planner Agent."
-        })
-
+    results, errors = [], []
     for index, task in enumerate(tasks):
-
-        # Validate task structure
         if not isinstance(task, dict):
-            errors.append({
-                "task_index": index,
-                "operation": None,
-                "error": "Invalid task format. Expected a dictionary."
-            })
+            errors.append({"task_index": index, "error": "Invalid task format."})
             continue
-
         operation = task.get("operation")
-
-        # Validate requested operation
-        if operation not in operation_handlers:
-            errors.append({
-                "task_index": index,
-                "operation": operation,
-                "error": "Unsupported analysis operation."
-            })
+        handler = HANDLERS.get(operation)
+        if handler is None:
+            errors.append({"task_index": index, "operation": operation, "error": "Unsupported operation."})
             continue
-
         try:
-            output = operation_handlers[operation](df)
-
             results.append({
                 "operation": operation,
+                "parameters": {k: v for k, v in task.items() if k != "operation"},
                 "status": "success",
-                "result": output
+                "result": handler(df, task),
             })
-
         except Exception as error:
-            errors.append({
-                "task_index": index,
-                "operation": operation,
-                "error": str(error)
-            })
+            errors.append({"task_index": index, "operation": operation, "error": str(error)})
 
-    # Determine overall execution status
-    if not results:
-        status = "failed"
-
-    elif errors:
-        status = "completed_with_errors"
-
-    else:
-        status = "success"
-
+    status = "failed" if not results else ("completed_with_errors" if errors else "success")
     return {
         "agent": "Analyst Agent",
         "status": status,
@@ -204,5 +208,5 @@ def execute_analysis_plan(df, analysis_plan):
         "total_executed": len(results),
         "total_errors": len(errors),
         "results": results,
-        "errors": errors
+        "errors": errors,
     }
