@@ -11,7 +11,7 @@ from utils.llm import get_llm
 
 
 Operation = Literal[
-    "dataset_overview", "column_summary", "value_counts", "aggregate",
+    "dataset_overview", "column_summary", "value_counts", "filter_count", "aggregate",
     "group_by", "correlation", "distribution", "top_n",
 ]
 
@@ -21,6 +21,8 @@ class AnalysisTask(BaseModel):
     columns: list[str] = Field(default_factory=list)
     group_by: list[str] = Field(default_factory=list)
     metric: Optional[str] = None
+    filter_column: Optional[str] = None
+    filter_value: Optional[str] = None
     aggregation: Optional[Literal["sum", "mean", "median", "min", "max", "count", "nunique", "std"]] = None
     limit: int = Field(default=10, ge=1, le=100)
     description: str = ""
@@ -52,10 +54,16 @@ def validate_analysis_plan(plan: AnalysisPlan, available_columns: list[str]) -> 
     for task in plan.tasks:
         columns = list(dict.fromkeys(task.columns))
         groups = list(dict.fromkeys(task.group_by))
-        referenced = columns + groups + ([task.metric] if task.metric else [])
+        referenced = columns + groups + ([task.metric] if task.metric else []) + (
+            [task.filter_column] if task.filter_column else []
+        )
         if any(column not in valid for column in referenced):
             continue
         if task.operation in {"column_summary", "value_counts", "distribution"} and not columns:
+            continue
+        if task.operation == "filter_count" and (
+            not task.filter_column or task.filter_value is None
+        ):
             continue
         if task.operation in {"aggregate", "top_n"} and not task.metric:
             continue
@@ -199,8 +207,63 @@ def create_analysis_plan(user_request: str, exploration_report: dict) -> dict:
     if not columns:
         raise ValueError("No columns were found in the uploaded dataset.")
 
-    # Fast-path common requests when the schema provides a clear metric.
+    # Fast-path categorical counts using the actual uploaded schema.
     normalised_request = _normalise(user_request)
+    overview = exploration_report.get("dataset_overview", {})
+    data_types = overview.get("data_types", {})
+    categorical_columns = [
+        column for column in columns
+        if not str(data_types.get(column, "")).startswith(("int", "float"))
+    ]
+    explicit_column = next(
+        (column for column in columns
+         if _normalise(column) and _normalise(column) in normalised_request),
+        None,
+    )
+
+    if re.search(r"\b(count|how many|number of)\b", normalised_request):
+        if explicit_column and re.search(r"\b(where|whose|with|is|equals?)\b", normalised_request):
+            tail = normalised_request.split(_normalise(explicit_column), 1)[1]
+            match = re.search(
+                r"\b(?:is|equals?|equal to)\s+([a-z0-9][a-z0-9 ]*?)\s*$",
+                tail,
+            )
+            if match:
+                target_value = match.group(1).strip()
+                return {
+                    "agent": "Planner Agent", "status": "success",
+                    "planner_mode": "schema_rule_based",
+                    "identified_columns": [explicit_column],
+                    "tasks": [{
+                        "operation": "filter_count",
+                        "filter_column": explicit_column,
+                        "filter_value": target_value,
+                        "description": f"Count rows where {explicit_column} equals {target_value}",
+                    }],
+                    "visualizations": [], "total_tasks": 1,
+                }
+
+        category_column = explicit_column or _find_column(
+            categorical_columns,
+            set(normalised_request.split()) & {
+                token for column in categorical_columns
+                for token in _normalise(column).split()
+            },
+        )
+        if category_column and re.search(r"\b(each|every|per|by)\b", normalised_request):
+            return {
+                "agent": "Planner Agent", "status": "success",
+                "planner_mode": "schema_rule_based",
+                "identified_columns": [category_column],
+                "tasks": [{
+                    "operation": "value_counts",
+                    "columns": [category_column],
+                    "limit": 100,
+                }],
+                "visualizations": [], "total_tasks": 1,
+            }
+
+    # Fast-path common requests when the schema provides a clear metric.
     simple_patterns = [
         r"\b(highest|maximum|max|largest|most expensive|highest priced|lowest|minimum|min|smallest|cheapest)\b",
         r"\b(average|mean|sum|total|median)\b",
@@ -245,7 +308,7 @@ QUESTION:
 DATASET:
 {schema_context}
 
-Allowed operations: dataset_overview, column_summary, value_counts, aggregate, group_by, correlation, distribution, top_n.
+Allowed operations: dataset_overview, column_summary, value_counts, filter_count, aggregate, group_by, correlation, distribution, top_n.
 Use exact column names. For group_by provide group_by, metric and aggregation. For highest/lowest questions, identify the correct numeric metric and relevant entity column. Do not invent results or columns. Do not treat identifiers as measurements. Keep the plan focused.
 
 {format_instructions}

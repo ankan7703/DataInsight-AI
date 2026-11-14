@@ -81,14 +81,20 @@ def _format_computed_answer(user_request, analysis_results):
                 f"is **{data.get('value')}**."
             )
 
+        if operation == "filter_count" and isinstance(data, dict):
+            return (
+                f"**{data.get('count')}** row(s) have **{data.get('column')}** "
+                f"equal to **{data.get('value')}**."
+            )
+
         if operation == "value_counts" and isinstance(data, dict):
             column, counts = next(iter(data.items()))
             if counts:
-                first = counts[0]
-                return (
-                    f"The most frequent value in **{column}** is "
-                    f"**{first['value']}**, appearing **{first['count']}** time(s)."
+                breakdown = ", ".join(
+                    f"**{entry['value']}**: **{entry['count']}**"
+                    for entry in counts
                 )
+                return f"Counts by **{column}**: {breakdown}."
 
         if operation == "dataset_overview" and isinstance(data, dict):
             return (
@@ -108,7 +114,7 @@ def generate_direct_answer(user_request, analysis_results):
 
     # These operations already contain the exact computed answer. A second LLM
     # request adds latency without improving factual accuracy.
-    deterministic_operations = {"group_by", "top_n", "aggregate", "value_counts", "dataset_overview"}
+    deterministic_operations = {"group_by", "top_n", "aggregate", "value_counts", "filter_count", "dataset_overview"}
     successful_operations = {
         item.get("operation") for item in results.get("results", [])
     }
