@@ -34,14 +34,75 @@ def _validate_results(analysis_results):
     return analysis_results
 
 
-def generate_direct_answer(user_request, analysis_results):
-    """Answer the exact question using computed results, never raw guesses."""
+def _format_computed_answer(user_request, analysis_results):
+    """Produce a transparent answer from deterministic Pandas results."""
     results = _validate_results(analysis_results)
-    prompt = PromptTemplate(
-        template="""You are the answer-writing component of a general-purpose data intelligence platform.
+    successful = results.get("results", [])
+    if not successful:
+        return "The analysis did not produce a usable result."
 
-Answer the user's exact question using ONLY the computed analysis results below.
-The dataset may come from any domain. Do not assume a business context.
+    for item in successful:
+        operation = item.get("operation")
+        data = item.get("result")
+
+        if operation == "group_by" and isinstance(data, list) and data:
+            first = data[0]
+            group_fields = [key for key in first if key != "result"]
+            if group_fields:
+                group_label = ", ".join(f"{key}: {first[key]}" for key in group_fields)
+                metric = item.get("parameters", {}).get("metric", "the selected metric")
+                aggregation = item.get("parameters", {}).get("aggregation", "value")
+                return (
+                    f"Based on the dataset, **{group_label}** has the "
+                    f"{aggregation} {metric}: **{first['result']}**."
+                )
+
+        if operation == "top_n" and isinstance(data, list) and data:
+            first = data[0]
+            params = item.get("parameters", {})
+            metric = params.get("metric", "the selected metric")
+            direction = "lowest" if params.get("description") == "minimum" else "highest"
+            return (
+                f"The record with the {direction} **{metric}** is: "
+                + ", ".join(f"{key}: {value}" for key, value in first.items())
+                + "."
+            )
+
+        if operation == "aggregate" and isinstance(data, dict):
+            return (
+                f"The {data.get('aggregation')} of **{data.get('column')}** "
+                f"is **{data.get('value')}**."
+            )
+
+        if operation == "value_counts" and isinstance(data, dict):
+            column, counts = next(iter(data.items()))
+            if counts:
+                first = counts[0]
+                return (
+                    f"The most frequent value in **{column}** is "
+                    f"**{first['value']}**, appearing **{first['count']}** time(s)."
+                )
+
+        if operation == "dataset_overview" and isinstance(data, dict):
+            return (
+                f"The dataset contains **{data.get('rows')} rows** and "
+                f"**{data.get('columns')} columns**."
+            )
+
+    return (
+        "The computed analysis ran successfully, but the available result "
+        "does not directly answer the question. Try a more specific question."
+    )
+
+
+def generate_direct_answer(user_request, analysis_results):
+    """Use Gemini for narrative; fall back to computed values when unavailable."""
+    results = _validate_results(analysis_results)
+    try:
+        prompt = PromptTemplate(
+            template="""Answer the user's exact question using ONLY the computed analysis results.
+Do not invent values, facts, causes, or recommendations. Clearly state when the results do not answer the question.
+Distinguish counts, sums, averages and other statistics. Never claim correlation proves causation.
 
 QUESTION:
 {question}
@@ -49,25 +110,20 @@ QUESTION:
 COMPUTED RESULTS:
 {results}
 
-RULES:
-- Do not invent values, records, explanations, causes, or recommendations.
-- Clearly state when the computed results do not answer the question.
-- Distinguish counts, sums, averages, and other statistics correctly.
-- Mention relevant failed operations if they affect the answer.
-- Keep the answer direct, readable, and appropriately detailed.
-- Never claim correlation proves causation.
 Return only the answer.
 """,
-        input_variables=["question", "results"],
-    )
-    response = get_llm().invoke(prompt.format(
-        question=user_request,
-        results=str(results),
-    ))
-    answer = extract_response_text(response).strip()
-    if not answer:
+            input_variables=["question", "results"],
+        )
+        response = get_llm().invoke(prompt.format(
+            question=user_request,
+            results=str(results),
+        ))
+        answer = extract_response_text(response).strip()
+        if answer:
+            return answer
         raise ValueError("AI returned an empty answer.")
-    return answer
+    except Exception:
+        return _format_computed_answer(user_request, results)
 
 
 def generate_rule_based_insights(analysis_results):
