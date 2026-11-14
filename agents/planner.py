@@ -170,8 +170,9 @@ def create_rule_based_analysis_plan(user_request: str, exploration_report: dict)
         "planner_mode": "rule_based_fallback",
         "fallback_reason": "Gemini Planner was unavailable or its quota was exhausted.",
         "identified_columns": list(dict.fromkeys(
-            task.metric for task in tasks if task.metric
-        ) + [column for task in tasks for column in task.columns + task.group_by]),
+            [task.metric for task in tasks if task.metric]
+            + [column for task in tasks for column in task.columns + task.group_by]
+        )),
         "tasks": [task.model_dump() for task in tasks],
         "visualizations": [],
         "total_tasks": len(tasks),
