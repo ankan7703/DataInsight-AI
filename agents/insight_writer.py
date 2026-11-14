@@ -52,6 +52,13 @@ def _format_computed_answer(user_request, analysis_results):
                 group_label = ", ".join(f"{key}: {first[key]}" for key in group_fields)
                 metric = item.get("parameters", {}).get("metric", "the selected metric")
                 aggregation = item.get("parameters", {}).get("aggregation", "value")
+                description = item.get("parameters", {}).get("description")
+                if description in {"highest_average", "lowest_average"}:
+                    direction = "highest" if description == "highest_average" else "lowest"
+                    return (
+                        f"**{group_label}** has the {direction} average "
+                        f"**{metric}**: **{first['result']}**."
+                    )
                 return (
                     f"Based on the dataset, **{group_label}** has the "
                     f"{aggregation} {metric}: **{first['result']}**."
