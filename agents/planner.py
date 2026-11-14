@@ -121,7 +121,7 @@ def create_rule_based_analysis_plan(user_request: str, exploration_report: dict)
     direction = "max" if re.search(r"\b(highest|maximum|max|largest|most expensive|top|highest priced)\b", request) else (
         "min" if re.search(r"\b(lowest|minimum|min|smallest|cheapest)\b", request) else None
     )
-    metric = _find_column(columns, {"price", "amount", "cost", "salary", "revenue", "sales", "profit", "score", "value"}, True, data_types)
+    metric = _find_column(columns, {"price", "amount", "cost", "salary", "revenue", "sales", "profit", "score", "value", "quantity", "stock", "inventory", "units", "rating", "marks", "tenure", "age"}, True, data_types)
 
     entity = None
     if re.search(r"\b(product|item|name|category|department|region|city|country|customer|employee)\b", request):
