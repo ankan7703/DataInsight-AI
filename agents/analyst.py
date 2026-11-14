@@ -105,7 +105,11 @@ def group_by(df, task):
         if pd.api.types.is_string_dtype(group_frame[column]):
             group_frame[column] = group_frame[column].str.strip()
     grouped = group_frame.groupby(groups, dropna=False)[metric].agg(method).reset_index(name="result")
-    grouped = grouped.sort_values(\n        "result",\n        ascending=(task.get("description") in {"minimum", "lowest_average"}),\n        na_position="last",\n    )
+    grouped = grouped.sort_values(
+        "result",
+        ascending=(task.get("description") in {"minimum", "lowest_average"}),
+        na_position="last",
+    )
     return _records(grouped.head(task.get("limit", 10)))
 
 
