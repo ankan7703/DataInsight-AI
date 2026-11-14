@@ -146,7 +146,8 @@ def top_n(df, task):
         raise ValueError("Unsupported aggregation.")
     if method not in {"count", "nunique"} and not pd.api.types.is_numeric_dtype(df[metric]):
         raise ValueError(f"{method} requires a numeric column: {metric}")
-    frame = df.sort_values(metric, ascending=False, na_position="last").head(task.get("limit", 10))
+    ascending = task.get("description") == "minimum"
+    frame = df.sort_values(metric, ascending=ascending, na_position="last").head(task.get("limit", 10))
     return _records(frame)
 
 
