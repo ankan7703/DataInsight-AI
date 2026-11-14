@@ -4,6 +4,7 @@ import streamlit as st
 import pandas as pd
 
 from tools.document_processor import extract_pdf_text
+from tools.file_loader import load_tabular_file
 from agents.document_analyst import generate_document_answer
 
 from tools.data_profiler import (
@@ -224,17 +225,11 @@ elif page == "Data Explorer":
                 and file_signature != st.session_state.loaded_file_signature
             ):
                 uploaded_file.seek(0)
-
-                if selected_sheet is None:
-                    df = pd.read_csv(uploaded_file)
-                else:
-                    df = pd.read_excel(
-                        uploaded_file,
-                        sheet_name=selected_sheet
-                    )
-
-                # Remove columns that are completely empty in the selected sheet.
-                df = df.dropna(axis=1, how="all")
+                df = load_tabular_file(
+                    uploaded_file.getvalue(),
+                    uploaded_file.name,
+                    sheet_name=selected_sheet,
+                )
 
                 if df.empty or df.shape[1] == 0:
                     st.error("The selected worksheet contains no usable data.")
