@@ -96,8 +96,18 @@ def _format_computed_answer(user_request, analysis_results):
 
 
 def generate_direct_answer(user_request, analysis_results):
-    """Use Gemini for narrative; fall back to computed values when unavailable."""
+    """Answer simple computed questions locally; use Gemini only for richer interpretation."""
     results = _validate_results(analysis_results)
+
+    # These operations already contain the exact computed answer. A second LLM
+    # request adds latency without improving factual accuracy.
+    deterministic_operations = {"group_by", "top_n", "aggregate", "value_counts", "dataset_overview"}
+    successful_operations = {
+        item.get("operation") for item in results.get("results", [])
+    }
+    if successful_operations and successful_operations.issubset(deterministic_operations):
+        return _format_computed_answer(user_request, results)
+
     try:
         prompt = PromptTemplate(
             template="""Answer the user's exact question using ONLY the computed analysis results.
