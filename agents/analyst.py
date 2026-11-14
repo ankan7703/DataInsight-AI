@@ -100,7 +100,11 @@ def group_by(df, task):
         raise ValueError("Unsupported aggregation.")
     if method not in {"count", "nunique"} and not pd.api.types.is_numeric_dtype(df[metric]):
         raise ValueError(f"{method} requires a numeric metric: {metric}")
-    grouped = df.groupby(groups, dropna=False)[metric].agg(method).reset_index(name="result")
+    group_frame = df[groups + [metric]].copy()
+    for column in groups:
+        if pd.api.types.is_string_dtype(group_frame[column]):
+            group_frame[column] = group_frame[column].str.strip()
+    grouped = group_frame.groupby(groups, dropna=False)[metric].agg(method).reset_index(name="result")
     grouped = grouped.sort_values(\n        "result",\n        ascending=(task.get("description") in {"minimum", "lowest_average"}),\n        na_position="last",\n    )
     return _records(grouped.head(task.get("limit", 10)))
 
