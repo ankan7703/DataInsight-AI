@@ -1,6 +1,10 @@
 from graph.workflow import run_workflow
+import hashlib
 import streamlit as st
 import pandas as pd
+
+from tools.document_processor import extract_pdf_text
+from agents.document_analyst import generate_document_answer
 
 from tools.data_profiler import (
     get_dataset_overview,
@@ -101,7 +105,8 @@ with st.sidebar:
         [
             "Dashboard",
             "Data Explorer",
-            "AI Analysis"
+            "AI Analysis",
+            "Document Q&A"
         ]
     )
 
@@ -998,3 +1003,95 @@ elif page == "AI Analysis":
                 st.write(
                     result.get("errors", [])
                 )
+
+
+# ---------------------------------------
+# 8. PDF Document Q&A
+# ---------------------------------------
+
+elif page == "Document Q&A":
+
+    st.header("PDF Document Q&A")
+    st.write(
+        "Upload a text-based PDF and ask questions about its contents. "
+        "Answers include page references."
+    )
+
+    uploaded_pdf = st.file_uploader(
+        "Choose a PDF document",
+        type=["pdf"],
+        help="Text-based PDFs are supported. Scanned PDFs requiring OCR are not supported yet."
+    )
+
+    if uploaded_pdf is not None:
+        pdf_bytes = uploaded_pdf.getvalue()
+        pdf_signature = hashlib.sha256(pdf_bytes).hexdigest()
+
+        if st.session_state.get("pdf_signature") != pdf_signature:
+            try:
+                with st.spinner("Extracting text from PDF pages..."):
+                    extracted = extract_pdf_text(pdf_bytes)
+
+                st.session_state.pdf_signature = pdf_signature
+                st.session_state.pdf_document = extracted
+                st.session_state.pdf_filename = uploaded_pdf.name
+                st.session_state.pdf_answer = ""
+
+            except Exception as error:
+                st.session_state.pdf_signature = None
+                st.session_state.pdf_document = None
+                st.error(f"PDF processing failed: {error}")
+
+    document = st.session_state.get("pdf_document")
+
+    if document is not None:
+        st.success(f"Document ready: {st.session_state.pdf_filename}")
+
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("Total PDF pages", document["total_pages"])
+        metric2.metric("Pages with text", document["pages_with_text"])
+        metric3.metric("Characters extracted", f'{document["characters_extracted"]:,}')
+
+        if document["pages_without_text"]:
+            st.warning(
+                "No selectable text was extracted from page(s): "
+                + ", ".join(map(str, document["pages_without_text"]))
+                + ". These may be scanned pages or image-only pages."
+            )
+
+        if document["truncated"]:
+            st.warning(
+                "The extraction reached the current 60,000-character limit. "
+                "Some later document text may not be included in answers."
+            )
+
+        with st.expander("Preview extracted text"):
+            for page_data in document["pages"][:5]:
+                st.markdown(f"**Page {page_data['page']}**")
+                st.write(page_data["text"][:2500])
+
+        st.divider()
+        question = st.text_area(
+            "Ask a question about this document",
+            placeholder="Example: What are the main objectives described in the document?",
+            height=100,
+            key="pdf_question"
+        )
+
+        if st.button("Ask PDF", type="primary", use_container_width=True):
+            if not question.strip():
+                st.warning("Enter a question first.")
+            else:
+                try:
+                    with st.spinner("Reading the document and preparing an answer..."):
+                        answer = generate_document_answer(question, document)
+                    st.session_state.pdf_answer = answer
+                except Exception as error:
+                    st.error(f"Could not answer the question: {error}")
+
+        if st.session_state.get("pdf_answer"):
+            st.subheader("Document Answer")
+            st.markdown(st.session_state.pdf_answer)
+
+    else:
+        st.info("Upload a PDF to begin document analysis.")
