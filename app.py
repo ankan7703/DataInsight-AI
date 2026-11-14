@@ -727,6 +727,7 @@ elif page == "Data Explorer":
 
         st.divider()
 
+
 # ---------------------------------------
 # 7. AI Analysis Page
 # ---------------------------------------
@@ -737,7 +738,7 @@ elif page == "AI Analysis":
 
     st.write(
         "Ask questions about your dataset "
-        "and let our multi-agent AI system analyze it."
+        "and get clear, AI-powered answers."
     )
 
     if st.session_state.df is None:
@@ -756,7 +757,10 @@ elif page == "AI Analysis":
 
         st.divider()
 
-        # Natural language question
+        # ---------------------------------------
+        # Natural Language Question
+        # ---------------------------------------
+
         st.subheader("Ask Your Data")
 
         user_request = st.text_area(
@@ -768,7 +772,24 @@ elif page == "AI Analysis":
             height=100
         )
 
-        # Execute analysis
+        # ---------------------------------------
+        # Optional Detailed Report
+        # ---------------------------------------
+
+        include_detailed_report = st.checkbox(
+            "Include Detailed Business Report",
+            value=False,
+            help=(
+                "Enable this option to generate detailed business "
+                "insights, recommendations and data limitations. "
+                "This requires an additional Gemini API call."
+            )
+        )
+
+        # ---------------------------------------
+        # Execute Analysis
+        # ---------------------------------------
+
         if st.button(
             "Run AI Analysis",
             type="primary",
@@ -783,6 +804,9 @@ elif page == "AI Analysis":
 
             else:
 
+                # Clear previous result
+                st.session_state.workflow_result = None
+
                 try:
 
                     with st.spinner(
@@ -791,14 +815,23 @@ elif page == "AI Analysis":
 
                         result = run_workflow(
                             df,
-                            user_request
+                            user_request,
+                            include_detailed_report=include_detailed_report
                         )
 
                         st.session_state.workflow_result = result
 
-                    st.success(
-                        "AI Analysis completed!"
-                    )
+                    if result.get("direct_answer"):
+
+                        st.success(
+                            "AI Analysis completed successfully!"
+                        )
+
+                    else:
+
+                        st.warning(
+                            "The workflow could not generate a quick answer."
+                        )
 
                 except Exception as error:
 
@@ -806,16 +839,20 @@ elif page == "AI Analysis":
                         f"Analysis failed: {str(error)}"
                     )
 
-        # Display saved analysis result
+        # ---------------------------------------
+        # Display Analysis Results
+        # ---------------------------------------
+
         result = st.session_state.workflow_result
 
         if result is not None:
 
             st.divider()
 
-            st.subheader("Analysis Report")
+            # ---------------------------------------
+            # Workflow Errors
+            # ---------------------------------------
 
-            # Workflow errors
             workflow_errors = result.get("errors", [])
 
             if workflow_errors:
@@ -825,88 +862,124 @@ elif page == "AI Analysis":
                 for error in workflow_errors:
                     st.write(f"- {error}")
 
-            # Insight report
-            insight_report = result.get(
-                "insight_report", {}
-            )
+            # ---------------------------------------
+            # Quick Answer (Always Displayed)
+            # ---------------------------------------
 
-            if insight_report:
+            direct_answer = result.get("direct_answer", "")
 
-                st.caption(
-                    f"Generated using: "
-                    f"{insight_report.get('writer_mode', 'unknown')}"
-                )
+            if direct_answer:
 
-                # Business insights
-                st.subheader("Business Insights")
+                st.subheader("Quick Answer")
 
-                insights = insight_report.get(
-                    "insights", []
-                )
-
-                if insights:
-
-                    for index, insight in enumerate(
-                        insights, start=1
-                    ):
-
-                        st.markdown(
-                            f"**{index}.** {insight}"
-                        )
-
-                else:
-
-                    st.info("No business insights generated.")
-
-                # Recommendations
-                st.subheader("Recommendations")
-
-                recommendations = insight_report.get(
-                    "recommendations", []
-                )
-
-                if recommendations:
-
-                    for index, recommendation in enumerate(
-                        recommendations, start=1
-                    ):
-
-                        st.markdown(
-                            f"**{index}.** {recommendation}"
-                        )
-
-                else:
-
-                    st.info("No recommendations generated.")
-
-                # Data limitations
-                st.subheader("Data Limitations")
-
-                limitations = insight_report.get(
-                    "data_limitations", []
-                )
-
-                if limitations:
-
-                    for limitation in limitations:
-                        st.markdown(f"- {limitation}")
-
-                else:
-
-                    st.info("No limitations reported.")
+                st.success(direct_answer)
 
             else:
 
-                st.warning(
-                    "The workflow did not generate an insight report."
+                st.error(
+                    "A direct answer could not be generated."
                 )
 
-            # Technical execution details
+            # ---------------------------------------
+            # Optional Detailed Business Report
+            # ---------------------------------------
+
+            if result.get("include_detailed_report", False):
+
+                insight_report = result.get(
+                    "insight_report", {}
+                )
+
+                if insight_report:
+
+                    st.divider()
+
+                    st.subheader("Detailed Business Report")
+
+                    st.caption(
+                        f"Generated using: "
+                        f"{insight_report.get('writer_mode', 'unknown')}"
+                    )
+
+                    # Business Insights
+                    st.subheader("Business Insights")
+
+                    insights = insight_report.get(
+                        "insights", []
+                    )
+
+                    if insights:
+
+                        for index, insight in enumerate(
+                            insights, start=1
+                        ):
+
+                            st.markdown(
+                                f"**{index}.** {insight}"
+                            )
+
+                    else:
+
+                        st.info("No business insights generated.")
+
+                    # Recommendations
+                    st.subheader("Recommendations")
+
+                    recommendations = insight_report.get(
+                        "recommendations", []
+                    )
+
+                    if recommendations:
+
+                        for index, recommendation in enumerate(
+                            recommendations, start=1
+                        ):
+
+                            st.markdown(
+                                f"**{index}.** {recommendation}"
+                            )
+
+                    else:
+
+                        st.info("No recommendations generated.")
+
+                    # Data Limitations
+                    st.subheader("Data Limitations")
+
+                    limitations = insight_report.get(
+                        "data_limitations", []
+                    )
+
+                    if limitations:
+
+                        for limitation in limitations:
+
+                            st.markdown(f"- {limitation}")
+
+                    else:
+
+                        st.info("No limitations reported.")
+
+                else:
+
+                    st.warning(
+                        "The Quick Answer was generated, "
+                        "but the detailed report could not be generated."
+                    )
+
+            else:
+
+                st.info(
+                    "Detailed report was not requested. "
+                    "Enable the checkbox before running another query "
+                    "if you want business insights and recommendations."
+                )
+
+            # ---------------------------------------
+            # Technical Execution Details
+            # ---------------------------------------
+
             with st.expander("View Analysis Execution Details"):
-
-                analysis_results = result.get(
-                    "analysis_results", {}
-                )
 
                 st.write("Analysis Plan")
 
@@ -916,8 +989,12 @@ elif page == "AI Analysis":
 
                 st.write("Analysis Results")
 
-                st.json(analysis_results)
+                st.json(
+                    result.get("analysis_results", {})
+                )
 
-                st.write("Workflow Result")
+                st.write("Workflow Errors")
 
-                st.json(result)
+                st.write(
+                    result.get("errors", [])
+                )

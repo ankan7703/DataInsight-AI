@@ -26,7 +26,202 @@ class InsightReport(BaseModel):
 
 
 # ---------------------------------------
-# 2. Rule-based fallback
+# 2. Helper: Extract Gemini response
+# ---------------------------------------
+
+def extract_response_text(response):
+
+    if isinstance(response.content, str):
+        return response.content
+
+    if isinstance(response.content, list):
+
+        return "".join(
+            block.get("text", "")
+            for block in response.content
+            if isinstance(block, dict)
+        )
+
+    raise ValueError("Unexpected Gemini response format.")
+
+
+# ---------------------------------------
+# 3. Rule-based Quick Answer Fallback
+# ---------------------------------------
+
+def generate_rule_based_answer(
+    user_request,
+    analysis_results
+):
+
+    question = user_request.lower()
+
+    for item in analysis_results.get("results", []):
+
+        operation = item.get("operation")
+        data = item.get("result")
+
+        if operation == "group_by_category" and data:
+
+            if "total" in question or "revenue" in question:
+                key = "total_purchase_amount"
+                metric = "total purchase amount"
+
+            elif "average" in question:
+                key = "average_purchase_amount"
+                metric = "average purchase amount"
+
+            else:
+                key = "total_purchase_amount"
+                metric = "total purchase amount"
+
+            highest = max(
+                data,
+                key=lambda x: x.get(key, float("-inf"))
+            )
+
+            return (
+                f"{highest['product_category']} has the highest "
+                f"{metric}, at ₹{highest[key]:,.2f}."
+            )
+
+        elif operation == "calculate_purchase_statistics":
+
+            total = data.get("total_purchase_amount")
+            average = data.get("average_purchase_amount")
+
+            if total is not None and "total" in question:
+                return f"Total purchase amount is ₹{total:,.2f}."
+
+            if average is not None:
+                return f"Average purchase amount is ₹{average:,.2f}."
+
+        elif operation == "analyze_age_distribution":
+
+            average_age = data.get("average_age")
+
+            if average_age is not None:
+                return (
+                    f"The average customer age is "
+                    f"{average_age:.1f} years."
+                )
+
+        elif operation == "group_by_city" and data:
+
+            highest = max(
+                data,
+                key=lambda x: x.get("total_purchase_amount", 0)
+            )
+
+            return (
+                f"{highest.get('city', 'This city')} has the "
+                f"highest total purchase amount."
+            )
+
+    return (
+        "The analysis was completed, but a concise answer "
+        "could not be generated from the available results. "
+        "Please refer to the analysis results."
+    )
+
+
+# ---------------------------------------
+# 4. Gemini-powered Quick Answer
+# ---------------------------------------
+
+
+def generate_direct_answer(
+    user_request,
+    analysis_results
+):
+
+    if not isinstance(analysis_results, dict):
+        raise TypeError("Analysis results must be a dictionary.")
+
+    if analysis_results.get("status") not in [
+        "success",
+        "completed_with_errors"
+    ]:
+        raise ValueError("Invalid analysis results.")
+
+    # Step 1: Try answering using Python first.
+    rule_based_answer = generate_rule_based_answer(
+        user_request,
+        analysis_results
+    )
+
+    # Step 2: If Python can answer the question,
+    # return immediately without calling Gemini.
+    if rule_based_answer:
+
+        print("Using Python Quick Answer. Gemini API call skipped.")
+
+        return rule_based_answer
+
+    # Step 3: Use Gemini for questions that need
+    # more advanced natural-language understanding.
+    try:
+
+        llm = get_llm()
+
+        prompt = PromptTemplate(
+            template="""
+You are the Quick Answer Agent of DataInsight AI.
+
+Answer the user's exact question using only the
+provided analysis results.
+
+USER QUESTION:
+{user_request}
+
+ANALYSIS RESULTS:
+{analysis_results}
+
+INSTRUCTIONS:
+1. Use simple everyday language.
+2. Keep the answer to one or two short sentences.
+3. Include relevant numerical values when available.
+4. Never invent facts or numbers.
+5. If the results cannot answer the question, say so.
+6. Do not hide failed analysis tasks.
+
+Return ONLY the direct answer.
+""",
+            input_variables=[
+                "user_request",
+                "analysis_results"
+            ]
+        )
+
+        formatted_prompt = prompt.format(
+            user_request=user_request,
+            analysis_results=str(analysis_results)
+        )
+
+        response = llm.invoke(formatted_prompt)
+
+        answer = extract_response_text(response).strip()
+
+        if not answer:
+            raise ValueError("Gemini returned an empty answer.")
+
+        return answer
+
+    except Exception as error:
+
+        print(f"Gemini Quick Answer failed: {error}")
+
+        return (
+            "I couldn't generate an advanced answer right now. "
+            "Please try again when the AI service is available."
+        )
+
+    finally:
+
+        print("Using Gemini Quick Answer.")
+
+# ---------------------------------------
+# 5. Rule-based Detailed Report Fallback
 # ---------------------------------------
 
 def generate_rule_based_insights(analysis_results):
@@ -74,11 +269,13 @@ def generate_rule_based_insights(analysis_results):
             average = data.get("average_purchase_amount")
             total = data.get("total_purchase_amount")
 
-            insights.append(
-                f"The average transaction value is "
-                f"₹{average:,.2f}, with total purchases "
-                f"of ₹{total:,.2f}."
-            )
+            if average is not None and total is not None:
+
+                insights.append(
+                    f"The average transaction value is "
+                    f"₹{average:,.2f}, with total purchases "
+                    f"of ₹{total:,.2f}."
+                )
 
         elif operation == "analyze_age_distribution":
 
@@ -106,7 +303,7 @@ def generate_rule_based_insights(analysis_results):
 
 
 # ---------------------------------------
-# 3. Gemini-powered Insight Writer
+# 6. Gemini-powered Detailed Insight Writer
 # ---------------------------------------
 
 def generate_insights(analysis_results):
@@ -167,15 +364,7 @@ Return your answer using the required structured format.
 
         response = llm.invoke(formatted_prompt)
 
-        if isinstance(response.content, str):
-            response_text = response.content
-
-        else:
-            response_text = "".join(
-                block.get("text", "")
-                for block in response.content
-                if isinstance(block, dict)
-            )
+        response_text = extract_response_text(response)
 
         structured_report = parser.parse(response_text)
 
@@ -190,13 +379,8 @@ Return your answer using the required structured format.
 
     except Exception as error:
 
-        print(
-            f"Gemini Insight Writer failed: {error}"
-        )
-
-        print(
-            "Switching to rule-based Insight Writer..."
-        )
+        print(f"Gemini Insight Writer failed: {error}")
+        print("Switching to rule-based Insight Writer...")
 
         fallback_report = generate_rule_based_insights(
             analysis_results
@@ -205,3 +389,4 @@ Return your answer using the required structured format.
         fallback_report["fallback_reason"] = str(error)
 
         return fallback_report
+    
