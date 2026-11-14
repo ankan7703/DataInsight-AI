@@ -134,7 +134,17 @@ def create_rule_based_analysis_plan(user_request: str, exploration_report: dict)
             entity = _find_column(columns, {"product", "item", "name", "category", "department", "region", "city", "country", "customer", "employee"})
 
     tasks = []
-    if direction and metric:
+    asks_for_average = bool(re.search(r"\b(average|mean)\b", request))
+    if direction and metric and entity and asks_for_average:
+        tasks.append(AnalysisTask(
+            operation="group_by",
+            group_by=[entity],
+            metric=metric,
+            aggregation="mean",
+            limit=1,
+            description="lowest_average" if direction == "min" else "highest_average",
+        ))
+    elif direction and metric:
         if entity:
             tasks.append(AnalysisTask(
                 operation="group_by",
@@ -189,32 +199,34 @@ def create_analysis_plan(user_request: str, exploration_report: dict) -> dict:
     if not columns:
         raise ValueError("No columns were found in the uploaded dataset.")
 
-    # Avoid network/model latency for common questions that can be mapped safely.
+    # Fast-path common requests when the schema provides a clear metric.
     normalised_request = _normalise(user_request)
     simple_patterns = [
-        r"\b(highest|maximum|max|largest|most expensive|highest priced|lowest|minimum|min|smallest|cheapest)\\b",
-        r"\b(average|mean|sum|total|median)\\b",
-        r"\b(count|how many|frequency)\\b",
+        r"\b(highest|maximum|max|largest|most expensive|highest priced|lowest|minimum|min|smallest|cheapest)\b",
+        r"\b(average|mean|sum|total|median)\b",
+        r"\b(count|how many|frequency)\b",
     ]
     is_simple = any(re.search(pattern, normalised_request) for pattern in simple_patterns)
+    metric_words = {
+        "price", "amount", "cost", "salary", "revenue", "sales", "profit",
+        "score", "value", "quantity", "stock", "inventory", "units",
+        "rating", "marks", "tenure", "age",
+    }
     has_metric = _find_column(
         columns,
-        {"price", "amount", "cost", "salary", "revenue", "sales", "profit", "score", "value"},
+        metric_words,
         True,
         exploration_report.get("dataset_overview", {}).get("data_types", {}),
     )
     has_entity = _find_column(
         columns,
-        {"product", "item", "name", "category", "department", "region", "city", "country", "customer", "employee"},
-    )
-    # "highest average ..." needs a different two-stage plan; leave it to Gemini.
-    complex_group_average = bool(
-        re.search(r"\b(highest|lowest|maximum|minimum|top|bottom)\\b", normalised_request)
-        and re.search(r"\b(average|mean)\\b", normalised_request)
+        {"product", "item", "name", "category", "department", "region",
+         "city", "country", "customer", "employee"},
     )
 
-    if is_simple and not complex_group_average and (
-        has_metric or (has_entity and re.search(r"\b(count|how many|frequency)\\b", normalised_request))
+    if is_simple and (
+        has_metric
+        or (has_entity and re.search(r"\b(count|how many|frequency)\b", normalised_request))
     ):
         fast_plan = create_rule_based_analysis_plan(user_request, exploration_report)
         fast_plan["planner_mode"] = "fast_rule_based"
