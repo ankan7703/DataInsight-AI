@@ -93,11 +93,30 @@ def get_duplicate_records(df):
 
 
 def get_statistical_summary(df):
+    """Summarize available data types without failing on empty type groups."""
     numerical_df = df.select_dtypes(include="number")
-    categorical_df = df.select_dtypes(include=["object", "category", "bool"])
+    categorical_df = df.select_dtypes(include=["object", "category", "bool", "str"])
+    datetime_df = df.select_dtypes(include=["datetime", "datetimetz"])
+
+    numerical_summary = (
+        numerical_df.describe().round(2)
+        if not numerical_df.empty
+        else pd.DataFrame()
+    )
+    categorical_summary = (
+        categorical_df.describe()
+        if not categorical_df.empty
+        else pd.DataFrame()
+    )
+    datetime_summary = (
+        datetime_df.describe()
+        if not datetime_df.empty
+        else pd.DataFrame()
+    )
     return {
-        "numerical_summary": numerical_df.describe().round(2),
-        "categorical_summary": categorical_df.describe(),
+        "numerical_summary": numerical_summary,
+        "categorical_summary": categorical_summary,
+        "datetime_summary": datetime_summary,
     }
 
 
