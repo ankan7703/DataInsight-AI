@@ -21,6 +21,8 @@ class AnalysisTask(BaseModel):
     columns: list[str] = Field(default_factory=list)
     group_by: list[str] = Field(default_factory=list)
     metric: Optional[str] = None
+    filter_column: Optional[str] = None
+    filter_value: Optional[str] = None
     aggregation: Optional[Literal["sum", "mean", "median", "min", "max", "count", "nunique", "std"]] = None
     limit: int = Field(default=10, ge=1, le=100)
     description: str = ""
@@ -52,7 +54,9 @@ def validate_analysis_plan(plan: AnalysisPlan, available_columns: list[str]) -> 
     for task in plan.tasks:
         columns = list(dict.fromkeys(task.columns))
         groups = list(dict.fromkeys(task.group_by))
-        referenced = columns + groups + ([task.metric] if task.metric else [])
+        referenced = columns + groups + ([task.metric] if task.metric else []) + (
+            [task.filter_column] if task.filter_column else []
+        )
         if any(column not in valid for column in referenced):
             continue
         if task.operation in {"column_summary", "value_counts", "distribution"} and not columns:
