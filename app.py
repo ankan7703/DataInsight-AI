@@ -187,45 +187,75 @@ elif page == "Data Explorer":
 
     if uploaded_file is not None:
 
-        file_signature = (
-            uploaded_file.name,
-            uploaded_file.size
-        )
+        try:
+            uploaded_file.seek(0)
 
-        # Load only when a new file is selected
-        if file_signature != st.session_state.loaded_file_signature:
+            if uploaded_file.name.lower().endswith(".csv"):
+                selected_sheet = None
+                file_signature = (
+                    uploaded_file.name,
+                    uploaded_file.size,
+                    None
+                )
+            else:
+                excel_file = pd.ExcelFile(uploaded_file)
+                sheet_names = excel_file.sheet_names
 
-            try:
-
-                uploaded_file.seek(0)
-
-                if uploaded_file.name.lower().endswith(".csv"):
-                    df = pd.read_csv(uploaded_file)
-
+                if not sheet_names:
+                    st.error("No worksheets were found in this Excel file.")
+                    selected_sheet = None
+                    file_signature = None
                 else:
-                    df = pd.read_excel(uploaded_file)
-
-                if df.empty:
-                    st.error("The uploaded dataset is empty.")
-
-                else:
-
-                    st.session_state.original_df = df.copy()
-                    st.session_state.df = df.copy()
-
-                    st.session_state.filename = uploaded_file.name
-                    st.session_state.loaded_file_signature = file_signature
-                    st.session_state.workflow_result = None
-
-                    st.success(
-                        f"{uploaded_file.name} uploaded successfully!"
+                    selected_sheet = st.selectbox(
+                        "Select worksheet to analyse",
+                        options=sheet_names,
+                        help="Excel workbooks can contain multiple datasets. Choose the worksheet you want DataInsight AI to analyse.",
+                        key="excel_sheet_selector"
+                    )
+                    file_signature = (
+                        uploaded_file.name,
+                        uploaded_file.size,
+                        selected_sheet
                     )
 
-            except Exception as error:
+            # Reload when the file OR selected worksheet changes.
+            if (
+                file_signature is not None
+                and file_signature != st.session_state.loaded_file_signature
+            ):
+                uploaded_file.seek(0)
 
-                st.error(
-                    f"Unable to read the uploaded file: {error}"
-                )
+                if selected_sheet is None:
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(
+                        uploaded_file,
+                        sheet_name=selected_sheet
+                    )
+
+                # Remove columns that are completely empty in the selected sheet.
+                df = df.dropna(axis=1, how="all")
+
+                if df.empty or df.shape[1] == 0:
+                    st.error("The selected worksheet contains no usable data.")
+                else:
+                    st.session_state.original_df = df.copy()
+                    st.session_state.df = df.copy()
+                    st.session_state.filename = (
+                        uploaded_file.name
+                        if selected_sheet is None
+                        else f"{uploaded_file.name} — {selected_sheet}"
+                    )
+                    st.session_state.loaded_file_signature = file_signature
+                    st.session_state.workflow_result = None
+                    st.session_state.cleaning_preview = None
+
+                    st.success(
+                        f"{st.session_state.filename} loaded successfully!"
+                    )
+
+        except Exception as error:
+            st.error(f"Unable to read the uploaded file: {error}")
 
     # Display dataset information
     if st.session_state.df is not None:
