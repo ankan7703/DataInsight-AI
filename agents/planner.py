@@ -199,8 +199,63 @@ def create_analysis_plan(user_request: str, exploration_report: dict) -> dict:
     if not columns:
         raise ValueError("No columns were found in the uploaded dataset.")
 
-    # Fast-path common requests when the schema provides a clear metric.
+    # Fast-path categorical counts using the actual uploaded schema.
     normalised_request = _normalise(user_request)
+    overview = exploration_report.get("dataset_overview", {})
+    data_types = overview.get("data_types", {})
+    categorical_columns = [
+        column for column in columns
+        if not str(data_types.get(column, "")).startswith(("int", "float"))
+    ]
+    explicit_column = next(
+        (column for column in columns
+         if _normalise(column) and _normalise(column) in normalised_request),
+        None,
+    )
+
+    if re.search(r"\b(count|how many|number of)\b", normalised_request):
+        if explicit_column and re.search(r"\b(where|whose|with|is|equals?)\b", normalised_request):
+            tail = normalised_request.split(_normalise(explicit_column), 1)[1]
+            match = re.search(
+                r"\b(?:is|equals?|equal to)\s+([a-z0-9][a-z0-9 ]*?)\s*$",
+                tail,
+            )
+            if match:
+                target_value = match.group(1).strip()
+                return {
+                    "agent": "Planner Agent", "status": "success",
+                    "planner_mode": "schema_rule_based",
+                    "identified_columns": [explicit_column],
+                    "tasks": [{
+                        "operation": "filter_count",
+                        "filter_column": explicit_column,
+                        "filter_value": target_value,
+                        "description": f"Count rows where {explicit_column} equals {target_value}",
+                    }],
+                    "visualizations": [], "total_tasks": 1,
+                }
+
+        category_column = explicit_column or _find_column(
+            categorical_columns,
+            set(normalised_request.split()) & {
+                token for column in categorical_columns
+                for token in _normalise(column).split()
+            },
+        )
+        if category_column and re.search(r"\b(each|every|per|by)\b", normalised_request):
+            return {
+                "agent": "Planner Agent", "status": "success",
+                "planner_mode": "schema_rule_based",
+                "identified_columns": [category_column],
+                "tasks": [{
+                    "operation": "value_counts",
+                    "columns": [category_column],
+                    "limit": 100,
+                }],
+                "visualizations": [], "total_tasks": 1,
+            }
+
+    # Fast-path common requests when the schema provides a clear metric.
     simple_patterns = [
         r"\b(highest|maximum|max|largest|most expensive|highest priced|lowest|minimum|min|smallest|cheapest)\b",
         r"\b(average|mean|sum|total|median)\b",
