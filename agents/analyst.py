@@ -70,12 +70,31 @@ def value_counts(df, task):
     _require_columns(df, columns)
     result = {}
     for column in columns:
-        counts = df[column].value_counts(dropna=False).head(task.get("limit", 10))
+        series = df[column]
+        if pd.api.types.is_string_dtype(series) or series.dtype == object:
+            series = series.astype("string").str.strip()
+        counts = series.value_counts(dropna=False).head(task.get("limit", 10))
         result[column] = [
             {"value": _json_safe(index), "count": int(count)}
             for index, count in counts.items()
         ]
     return result
+
+
+def filter_count(df, task):
+    column = task.get("filter_column")
+    _require_columns(df, [column])
+    value = str(task.get("filter_value", "")).strip()
+    series = df[column]
+    if pd.api.types.is_string_dtype(series) or series.dtype == object:
+        matched = series.astype("string").str.strip().str.casefold() == value.casefold()
+    else:
+        matched = series.astype("string").str.strip() == value
+    return {
+        "column": column,
+        "value": value,
+        "count": int(matched.fillna(False).sum()),
+    }
 
 
 def aggregate(df, task):
@@ -163,6 +182,7 @@ HANDLERS = {
     "dataset_overview": dataset_overview,
     "column_summary": column_summary,
     "value_counts": value_counts,
+    "filter_count": filter_count,
     "aggregate": aggregate,
     "group_by": group_by,
     "correlation": correlation,
